@@ -86,4 +86,4 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python train.py --source_data ogbn-arxiv+arxiv_2023
 
 ```
 CUDA_VISIBLE_DEVICES=0 python eval.py --target_data cora+citeseer+wikics+instagram+photo+computer+history --ckpt graphclip
-```# DCGFM
+```
