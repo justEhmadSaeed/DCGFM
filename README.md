@@ -29,8 +29,7 @@ Please unzip the following dataset and place it in the `OFA/cache_data/dataset` 
 
 |Dataset  | Links |  
 |--|--|
-|
-molecule_property_instruction|[HuggingFace](https://huggingface.co/datasets/haitengzhao/molecule_property_instruction)|
+|molecule_property_instruction|[HuggingFace](https://huggingface.co/datasets/haitengzhao/molecule_property_instruction)|
 
 
 ### Pre-training and Testing with DCGFM
