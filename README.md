@@ -17,7 +17,7 @@ We evaluate DCGFM on two representative GFM backbones, i.e., OFA and GraphCLIP.
 ## OFA with DCGFM
 
 ### Data preparation
-Most datasets can be downloaded automatically by the code, and Here are the datasets and models requiring manual download.
+Most datasets can be downloaded automatically by the code, and here are the datasets and models requiring manual download.
 
 Please download the following model and place it in the `OFA/cache_data/model` directory:
 
