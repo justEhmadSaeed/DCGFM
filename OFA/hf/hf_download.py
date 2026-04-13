@@ -7,6 +7,7 @@
 
 import argparse
 import os
+import subprocess
 import sys
 
 # Check if huggingface_hub is installed, if not, install it
@@ -35,14 +36,14 @@ parser.add_argument(
 parser.add_argument(
     "--include",
     default=None,
-    type=str,
-    help="Specify the file to be downloaded",
+    nargs="*",
+    help="Glob patterns to include from files to download, e.g. --include *.json *.safetensors",
 )
 parser.add_argument(
     "--exclude",
     default=None,
-    type=str,
-    help="Files you don't want to download",
+    nargs="*",
+    help="Glob patterns to exclude from files to download, e.g. --exclude *.bin *.md",
 )
 parser.add_argument(
     "--dataset",
@@ -57,6 +58,51 @@ parser.add_argument(
     default=None,
     type=str,
     help="path to be saved after downloading.",
+)
+parser.add_argument(
+    "--local_dir",
+    default=None,
+    type=str,
+    help="Explicit local directory passed to `hf download --local-dir`. Overrides the directory derived from --save_dir.",
+)
+parser.add_argument(
+    "--repo_type",
+    default="model",
+    choices=["model", "dataset", "space"],
+    help="Repository type for `hf download`.",
+)
+parser.add_argument(
+    "--revision",
+    default=None,
+    type=str,
+    help="Git revision id which can be a branch name, a tag, or a commit hash.",
+)
+parser.add_argument(
+    "--cache_dir",
+    default=None,
+    type=str,
+    help="Directory where to save files in the Hugging Face cache.",
+)
+parser.add_argument(
+    "--force_download",
+    action="store_true",
+    help="Force download even if files are already cached.",
+)
+parser.add_argument(
+    "--dry_run",
+    action="store_true",
+    help="Perform a dry run without actually downloading files.",
+)
+parser.add_argument(
+    "--quiet",
+    action="store_true",
+    help="Disable progress bars and only print the download path.",
+)
+parser.add_argument(
+    "--max_workers",
+    default=None,
+    type=int,
+    help="Maximum number of workers to use for downloading files.",
 )
 parser.add_argument(
     "--use_hf_transfer", default=True, type=eval, help="Use hf-transfer, default: True"
@@ -88,64 +134,56 @@ elif args.model is not None and args.dataset is not None:
     print("Only one model or dataset can be downloaded at a time.")
     sys.exit()
 
+if args.dataset is not None:
+    args.repo_type = "dataset"
+
 if args.use_mirror:
     # Set default endpoint to mirror site if specified
     os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
     print("export HF_ENDPOINT=", os.getenv("HF_ENDPOINT"))  # https://hf-mirror.com
 
 
+def build_default_local_dir(base_dir, repo_id, repo_type):
+    repo_name = repo_id.split("/")
+    prefix = f"{repo_type}s" if repo_type != "model" else "models"
+    if len(repo_name) > 1:
+        return os.path.join(base_dir, f"{prefix}--{repo_name[0]}--{repo_name[1]}")
+    return os.path.join(base_dir, f"{prefix}--{repo_name[0]}")
+
+
+def extend_multi_flag(cmd, flag_name, values):
+    if values is None:
+        return
+    for value in values:
+        cmd.extend([flag_name, value])
+
+
+repo_id = args.model if args.model is not None else args.dataset
+local_dir = args.local_dir
+if local_dir is None and args.save_dir is not None:
+    local_dir = build_default_local_dir(args.save_dir, repo_id, args.repo_type)
+
+download_cmd = ["hf", "download", repo_id, "--repo-type", args.repo_type]
+
+if args.revision is not None:
+    download_cmd.extend(["--revision", args.revision])
+if args.cache_dir is not None:
+    download_cmd.extend(["--cache-dir", args.cache_dir])
+if local_dir is not None:
+    download_cmd.extend(["--local-dir", local_dir])
 if args.token is not None:
-    token_option = "--token %s" % args.token
-else:
-    token_option = ""
+    download_cmd.extend(["--token", args.token])
+if args.force_download:
+    download_cmd.append("--force-download")
+if args.dry_run:
+    download_cmd.append("--dry-run")
+if args.quiet:
+    download_cmd.append("--quiet")
+if args.max_workers is not None:
+    download_cmd.extend(["--max-workers", str(args.max_workers)])
 
-if args.include is not None:
-    include_option = "--include %s" % args.include
-else:
-    include_option =  ""
-    
-if args.exclude is not None:
-    exclude_option = "--exclude %s" % args.exclude
-else:
-    exclude_option = ""
-    
-    
-if args.model is not None:
-    model_name = args.model.split("/")
-    save_dir_option = ""
-    if args.save_dir is not None:
-        if len(model_name) > 1:
-            save_path = os.path.join(
-                args.save_dir, "models--%s--%s" % (model_name[0], model_name[1])
-            )
-        else:
-            save_path = os.path.join(
-                args.save_dir, "models--%s" % (model_name[0])
-            )
-        save_dir_option = "--local-dir %s" % save_path
+extend_multi_flag(download_cmd, "--include", args.include)
+extend_multi_flag(download_cmd, "--exclude", args.exclude)
 
-    download_shell = (
-        "huggingface-cli download %s %s %s --local-dir-use-symlinks False --resume-download %s %s"
-        % (token_option, include_option, exclude_option, args.model, save_dir_option)
-    )
-    os.system(download_shell)
-
-elif args.dataset is not None:
-    dataset_name = args.dataset.split("/")
-    save_dir_option = ""
-    if args.save_dir is not None:
-        if len(dataset_name) > 1:
-            save_path = os.path.join(
-                args.save_dir, "datasets--%s--%s" % (dataset_name[0], dataset_name[1])
-            )
-        else:
-            save_path = os.path.join(
-                args.save_dir, "datasets--%s" % (dataset_name[0])
-            )
-        save_dir_option = "--local-dir %s" % save_path
-
-    download_shell = (
-        "huggingface-cli download %s %s %s --local-dir-use-symlinks False --resume-download  --repo-type dataset %s %s"
-        % (token_option, include_option, exclude_option, args.dataset, save_dir_option)
-    )
-    os.system(download_shell)
+raise_code = subprocess.run(download_cmd, check=False).returncode
+sys.exit(raise_code)

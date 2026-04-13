@@ -16,6 +16,8 @@ We evaluate DCGFM on two representative GFM backbones, i.e., OFA and GraphCLIP.
 
 ## OFA with DCGFM
 
+For a Colab-oriented walkthrough focused on the OFA molecular graph workflow, see [OFA/README_COLAB.md](/Users/ehmadsaeed/MS-AI/CS5312%20Big%20Data%20Analytics/Research%20Project/DCGFM/OFA/README_COLAB.md).
+
 ### Data preparation
 Most datasets can be downloaded automatically by the code, and here are the datasets and models requiring manual download.
 
