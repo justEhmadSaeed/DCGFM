@@ -146,14 +146,42 @@ def compute_cycle(mol):
     return cycle_score
 
 
-def smiles2graph(smiles_string, removeHs=True, reorder_atoms=False):
+def _mol_from_smiles_with_recovery(smiles_string):
+    if not isinstance(smiles_string, str) or len(smiles_string.strip()) == 0:
+        return None, "empty_or_non_string_smiles"
+
+    mol = Chem.MolFromSmiles(smiles_string)
+    if mol is not None:
+        return mol, None
+
+    # Recovery path: parse without sanitization then sanitize with relaxed properties.
+    mol = Chem.MolFromSmiles(smiles_string, sanitize=False)
+    if mol is None:
+        return None, "mol_from_smiles_failed"
+    try:
+        Chem.SanitizeMol(
+            mol,
+            sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+        )
+        mol.UpdatePropertyCache(strict=False)
+        return mol, "recovered_relaxed_sanitize"
+    except Exception:
+        return None, "sanitize_failed"
+
+
+def smiles2graph(smiles_string, removeHs=True, reorder_atoms=False, return_error=False):
     """
     Converts SMILES string to graph Data object
     :input: SMILES string (str)
     :return: graph object
     """
 
-    mol = Chem.MolFromSmiles(smiles_string)
+    mol, parse_msg = _mol_from_smiles_with_recovery(smiles_string)
+    if mol is None:
+        if return_error:
+            return None, parse_msg
+        return None
+
     cycle_score = compute_cycle(mol)
     mol = mol if removeHs else Chem.AddHs(mol)
     if reorder_atoms:
@@ -190,6 +218,8 @@ def smiles2graph(smiles_string, removeHs=True, reorder_atoms=False):
     graph["node_feat"] = atom_features_list
     graph["cycle"] = cycle_score
 
+    if return_error:
+        return graph, parse_msg
     return graph
 
 
@@ -198,11 +228,17 @@ def get_raw_graphs(data_path):
         os.path.join(os.path.dirname(__file__), "chembl_pretrain.pth"),
     )
     graphs = []
+    invalid_cnt = 0
     for i, entry in enumerate(arr[0]):
-        graph = smiles2graph(entry)
+        graph, err = smiles2graph(entry, return_error=True)
+        if graph is None:
+            invalid_cnt += 1
+            continue
         graph["label"] = arr[1][i]
         graphs.append(graph)
     if not os.path.exists(data_path):
         os.mkdir(data_path)
     with open(os.path.join(data_path, "raw_graph.pkl"), "wb") as f:
         pickle.dump(graphs, f)
+    if invalid_cnt > 0:
+        print(f"Skipped {invalid_cnt} invalid molecules while building raw_graph.pkl.")

@@ -30,35 +30,64 @@ def load_prompt_json(name):
 
 def get_local_text(name):
     print("gen text")
-    # 改为本地数据集
     cache_dir = os.path.join(os.path.dirname(__file__), "../../cache_data/dataset/datasets--haitengzhao--molecule_property_instruction")
     data = load_dataset(path=cache_dir, split=NAME_TO_SPLIT[name])
     data_dict = {"label": data["label"], "task_index": data["task_index"], "molecule_index": data["molecule_index"], }
     pd_data = pd.DataFrame.from_dict(data_dict)
-    cls_data = pd_data[np.logical_not(pd.isna(pd_data["task_index"]))]
+    cls_data = pd_data[np.logical_not(pd.isna(pd_data["task_index"]))].copy()
     cls_data["ori_index"] = np.arange(len(cls_data))
 
-    group = cls_data.groupby("molecule_index")
-    index = group.ori_index.first()
-    tasks = group.task_index.agg(lambda x: x.str.cat(sep=","))
-    labels = group.label.agg(lambda x: x.str.cat(sep=","))
-    mol = [data[i]["graph"] for i in index]
-    split = [data[i]["split"] for i in index]
+    grouped = (
+        cls_data.groupby("molecule_index", sort=False)
+        .agg(
+            ori_index=("ori_index", "first"),
+            task_index=("task_index", lambda x: x.astype(str).str.cat(sep=",")),
+            label=("label", lambda x: x.astype(str).str.cat(sep=",")),
+        )
+        .reset_index(drop=True)
+    )
 
     prompt_text = load_prompt_json(name)
     task2index = {k: [i, prompt_text[k]] for i, k in enumerate(prompt_text)}
     label_text = get_label_texts(task2index)
     graphs = []
-    for i in range(len(mol)):
-        graph = smiles2graph(mol[i])
-        task_lst = [task2index[v][0] for v in tasks[i].split(",")]
-        label_lst = [1 if v == "Yes" else 0 for v in labels[i].split(",")]
+    skipped = {}
+    recovered_cnt = 0
+    for row in grouped.itertuples(index=False):
+        raw_graph = data[int(row.ori_index)]["graph"]
+        graph, parse_msg = smiles2graph(raw_graph, return_error=True)
+        if graph is None:
+            skipped[parse_msg] = skipped.get(parse_msg, 0) + 1
+            continue
+        if parse_msg is not None:
+            recovered_cnt += 1
+
+        task_keys = row.task_index.split(",")
+        label_values = row.label.split(",")
+        if any(v not in task2index for v in task_keys):
+            skipped["unknown_task_index"] = skipped.get("unknown_task_index", 0) + 1
+            continue
+        task_lst = [task2index[v][0] for v in task_keys]
+        label_lst = [1 if v == "Yes" else 0 for v in label_values]
         cur_label = np.zeros(len(task2index))
         cur_label[:] = np.nan
         cur_label[task_lst] = label_lst
         graph["label"] = cur_label
-        graph["split"] = split[i]
+        graph["split"] = data[int(row.ori_index)]["split"]
         graphs.append(graph)
+
+    if len(graphs) == 0:
+        raise RuntimeError(
+            f"No valid molecular graphs were generated for split '{NAME_TO_SPLIT[name]}'. "
+            f"Skip reasons: {skipped}"
+        )
+    if skipped:
+        print(
+            f"Skipped {sum(skipped.values())} invalid/unsupported molecules for {name}. "
+            f"Breakdown: {skipped}"
+        )
+    if recovered_cnt > 0:
+        print(f"Recovered {recovered_cnt} molecules with relaxed RDKit sanitization for {name}.")
     return graphs, label_text
 
 

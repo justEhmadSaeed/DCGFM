@@ -209,8 +209,8 @@ print("Using GPUs:", gpu_ids)
   --hard_pruning_mode hard_prune_api \
   --hard_pruning_joint \
   --hard_pruning_reverse \
-  --hard_pruning_ratio 0.3/0.5/0.7 \
-  --prune_ratio 0.3/0.5/0.7 \
+  --hard_pruning_ratio 0.3 \
+  --prune_ratio 0.3 \
   offline_log true
 ```
 
