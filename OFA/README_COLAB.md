@@ -32,7 +32,7 @@ Then verify the GPU:
 
 ```bash
 %cd /content
-!git clone https://github.com/<your-org-or-fork>/DCGFM.git
+!git clone https://github.com/justEhmadSaeed/DCGFM.git
 %cd /content/DCGFM/OFA
 ```
 
