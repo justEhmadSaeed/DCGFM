@@ -187,12 +187,22 @@ What this does:
 
 Once the smoke test works, you can run the default reduced configuration:
 
-```bash
+```python
 %cd /content/DCGFM/OFA
 
-!CUDA_VISIBLE_DEVICES=0 python run_cdm.py \
+import os
+import torch
+
+gpu_ids = ",".join(str(i) for i in range(torch.cuda.device_count()))
+if not gpu_ids:
+    raise RuntimeError("No GPU detected. Switch Colab runtime to GPU first.")
+
+os.environ["CUDA_VISIBLE_DEVICES"] = gpu_ids
+print("Using GPUs:", gpu_ids)
+
+!python run_cdm.py \
   --control_gpu \
-  --gpus 0 \
+  --gpus {gpu_ids} \
   --save_model \
   --override yamls/soft_and_hard.yaml \
   --hard_pruning_mode hard_prune_api \
