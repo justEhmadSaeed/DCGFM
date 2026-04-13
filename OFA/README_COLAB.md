@@ -185,7 +185,8 @@ What this does:
 
 ## 7. Run the Full Configuration
 
-Once the smoke test works, you can run the default reduced configuration:
+Once the smoke test works, run the OFA command in `README.md` with GPU auto-detection.
+`README.md` lists `0.3/0.5/0.7`; in Colab, run that as three separate runs:
 
 ```python
 %cd /content/DCGFM/OFA
@@ -208,19 +209,12 @@ print("Using GPUs:", gpu_ids)
   --hard_pruning_mode hard_prune_api \
   --hard_pruning_joint \
   --hard_pruning_reverse \
-  --hard_pruning_ratio 0.3 \
-  --prune_ratio 0.3 \
+  --hard_pruning_ratio 0.3/0.5/0.7 \
+  --prune_ratio 0.3/0.5/0.7 \
   offline_log true
 ```
 
-This now uses the reduced config values from `yamls/soft_and_hard.yaml` unless you override them on the command line.
-
-For other pruning ratios, replace:
-
-- `--hard_pruning_ratio 0.3`
-- `--prune_ratio 0.3`
-
-with values such as `0.5` or `0.7`.
+This is the runnable Colab equivalent of the OFA command in `README.md`, while using all available GPUs.
 
 ## 8. Where Outputs Go
 
@@ -254,135 +248,7 @@ From the config files:
 
 So the molecular portion is a few-shot molecular graph setup, not a plain single-dataset classification run.
 
-## 10. Common Failures
-
-### `FileNotFoundError` for model or dataset cache
-
-Cause:
-
-- the Hugging Face downloads are not in the exact directories expected by the code
-
-Fix:
-
-- confirm these exist:
-  - `./cache_data/model/models--sentence-transformers--multi-qa-distilbert-cos-v1`
-  - `./cache_data/dataset/datasets--haitengzhao--molecule_property_instruction`
-
-### RDKit import error
-
-Cause:
-
-- `rdkit-pypi` did not install correctly
-
-Fix:
-
-```bash
-!pip install -q rdkit-pypi
-```
-
-### WandB login prompt or WandB error
-
-Fix:
-
-```bash
-%env WANDB_MODE=offline
-```
-
-and keep `offline_log true` at the end of the command.
-
-### Colab runs out of memory or times out
-
-Start smaller:
-
-- `--fs_sample_size 1000`
-- `num_epochs 1`
-- `hard_pruning_epochs 1`
-- `batch_size 16`
-
-## 11. Minimal Colab Cell Order
-
-If you just want the shortest working sequence, use these cells in order.
-
-### Cell 1
-
-```bash
-!nvidia-smi
-```
-
-### Cell 2
-
-```bash
-%cd /content
-!git clone https://github.com/<your-org-or-fork>/DCGFM.git
-%cd /content/DCGFM/OFA
-```
-
-### Cell 3
-
-```bash
-!pip install -q --upgrade pip
-!pip install -q -r /content/DCGFM/requirements.txt
-```
-
-### Cell 3.1
-
-```python
-import os
-import torch
-
-torch_version = torch.__version__.split("+")[0]
-cuda_version = f"cu{torch.version.cuda.replace('.', '')}"
-wheel_index = f"https://data.pyg.org/whl/torch-{torch_version}+{cuda_version}.html"
-
-os.system(
-    f"pip install -q pyg_lib torch_scatter torch_sparse torch_cluster -f {wheel_index}"
-)
-```
-
-### Cell 4
-
-```bash
-!python hf/hf_download.py \
-  --model sentence-transformers/multi-qa-distilbert-cos-v1 \
-  --save_dir ./cache_data/model \
-  --quiet \
-  --use_mirror False
-
-!python hf/hf_download.py \
-  --dataset haitengzhao/molecule_property_instruction \
-  --save_dir ./cache_data/dataset \
-  --quiet \
-  --use_mirror False
-```
-
-### Cell 5
-
-```bash
-%env WANDB_MODE=offline
-```
-
-### Cell 6
-
-```bash
-!CUDA_VISIBLE_DEVICES=0 python run_cdm.py \
-  --control_gpu \
-  --gpus 0 \
-  --override yamls/soft_and_hard.yaml \
-  --hard_pruning_mode hard_prune_api \
-  --hard_pruning_joint \
-  --hard_pruning_reverse \
-  --hard_pruning_ratio 0.3 \
-  --prune_ratio 0.3 \
-  --fs_sample_size 2000 \
-  --checkpoint_interval 1 \
-  num_epochs 2 \
-  hard_pruning_epochs 2 \
-  batch_size 32 \
-  eval_batch_size 32 \
-  offline_log true
-```
-
-## 12. If You Want a Molecule-Only Colab Workflow
+## 10. If You Want a Molecule-Only Colab Workflow
 
 That is not fully supported by the current `run_cdm.py` pruning path.
 
