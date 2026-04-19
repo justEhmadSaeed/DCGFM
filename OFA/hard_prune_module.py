@@ -20,6 +20,8 @@ class DeepGLAD(pl.LightningModule):
         self.training_step_outputs = []
         self.validation_step_outputs = []
         self.test_step_outputs = []
+        # ADDED: list used by test_step to accumulate per-graph embeddings for saving
+        self.test_emb_outputs = []
 
     def forward(self, data):
         
@@ -30,9 +32,18 @@ class DeepGLAD(pl.LightningModule):
                                 lr=self.learning_rate,
                                 weight_decay=self.weight_decay)
         
-    def test_step(self, batch, batch_idx): 
+    def test_step(self, batch, batch_idx):
         self.test_step_outputs.append((self(batch)))
-        
+        # ADDED: collect the aggregated graph embeddings (sum over GIN layers) for saving.
+        # These are the same intermediate representations used to compute anomaly scores,
+        # extracted here without modifying the score computation path.
+        with torch.no_grad():
+            embs_raw, _ = self.model(batch)
+            # embs_raw: (nlayer+1, batch_size, nhid); aggregate to (batch_size, nhid).
+            # Use getattr so this base-class method is safe even if a subclass omits self.mode.
+            _mode = getattr(self, 'mode', 'sum')
+            batch_embs = embs_raw.sum(dim=0) if _mode == 'sum' else torch.cat(list(embs_raw), dim=-1)
+        self.test_emb_outputs.append(batch_embs.detach().cpu())
         return self(batch)
 
 class GIN(nn.Module):
@@ -100,6 +111,8 @@ class GIN_Hard_Prune(DeepGLAD):
         assert self.mode in ['concat', 'sum']
         self.register_buffer('center', torch.zeros(nhid if self.mode=='sum' else (nlayer+1)*nhid ))
         self.register_buffer('all_layer_centers', torch.zeros(nlayer+1, nhid))
+        # ADDED: accumulates per-graph embeddings during test phase for external saving
+        self.test_emb_outputs = []
         
     def get_hiddens(self, data):
         embs, stds = self.model(data)
@@ -177,23 +190,33 @@ class SimpleDataset(InMemoryDataset):
     def download(self): pass
     def process(self): pass
 
-def hard_prune_api(data_list, batch_size=32, weight_decay=5e-4, nlayer=5, max_epochs=25, devices=[0]):
+def hard_prune_api(data_list, batch_size=32, weight_decay=5e-4, nlayer=5, max_epochs=25, devices=[0],
+                   emb_cache=None):
+    # ADDED: emb_cache — if a list is passed, it will be populated with the (N, nhid) embedding
+    # array for every subgraph in data_list, in the same order as the input list.
+    # Caller is responsible for creating the list before passing it in.
     dataset = SimpleDataset(data_list)
-    
+
     train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     test_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     model = GIN_Hard_Prune(dataset[0].x.shape[1], weight_decay=weight_decay, nlayer=nlayer)
     trainer = pl.Trainer(accelerator='gpu', devices=devices, max_epochs=max_epochs, logger=True)
     trainer.fit(model=model, train_dataloaders=train_dataloader)
     trainer.test(model=model, dataloaders=test_dataloader)
-    
+
     if not model.test_step_outputs:
         raise ValueError("No test outputs available")
-        
+
+    # ADDED: populate emb_cache with all per-graph embeddings collected during test phase.
+    # Only supported for single-GPU runs; multi-GPU would require all_gather on embeddings too.
+    if emb_cache is not None and trainer.world_size == 1 and model.test_emb_outputs:
+        all_embs = torch.cat(model.test_emb_outputs, dim=0).numpy()  # (N, nhid)
+        emb_cache.extend(all_embs)
+
     local_scores = torch.cat([out for out in model.test_step_outputs])
     if trainer.world_size > 1:
         gathered_scores = trainer.strategy.all_gather(local_scores)
-        if trainer.is_global_zero:  
+        if trainer.is_global_zero:
             anomaly_scores = torch.cat([scores for scores in gathered_scores])
             return anomaly_scores.cpu().detach().numpy()
     else:
