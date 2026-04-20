@@ -36,8 +36,109 @@ import numpy as np
 import torch_geometric as pyg
 import pickle
 
-def get_useful_indices(data_list_no_prompt, hard_pruning_mode, hard_pruning_ratio, hard_pruning_reverse, hard_pruning_epochs):
-    anomany_scores = globals()[hard_pruning_mode](data_list = data_list_no_prompt, max_epochs = hard_pruning_epochs)
+# ADDED: imports for embedding saving and ACF plotting
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend — safe for server / HPC use
+import matplotlib.pyplot as plt
+from statsmodels.graphics.tsaplots import plot_acf
+from sklearn.decomposition import PCA
+
+# ADDED: directory where embeddings (.npy) and ACF plots (.png) are written.
+# Override this variable to redirect output without touching the rest of the code.
+EMBEDDINGS_SAVE_DIR = "saved_embeddings"
+
+# ---------------------------------------------------------------------------
+# ADDED: Embedding-saving and ACF-plotting helpers
+# ---------------------------------------------------------------------------
+
+def _save_embeddings_and_acf(embeddings, dataset_name, stage, save_dir):
+    """Save embeddings as .npy and produce an ACF plot for the given stage.
+
+    Args:
+        embeddings (np.ndarray): Shape (N, D) — one row per subgraph.
+        dataset_name (str):      Human-readable name used in filenames/titles.
+        stage (str):             "pre_prune" or "post_prune".
+        save_dir (str):          Directory to write files into (created if needed).
+
+    Dimensionality-reduction strategy for ACF:
+        Embeddings are reduced to a scalar per sample via PCA (1 component).
+        PCA is preferred over a plain mean because it projects along the axis of
+        maximum variance, giving a more informative 1-D signal.  The resulting
+        sequence is treated as a 1-D time series ordered by sample index, and
+        the ACF is computed over that sequence.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    # --- save raw embeddings ---
+    emb_filename = f"{dataset_name}_embeddings_{stage}.npy"
+    emb_path = os.path.join(save_dir, emb_filename)
+    np.save(emb_path, embeddings)
+    print(f"[DCGFM] Saved embeddings  → {emb_path}  shape={embeddings.shape}")
+
+    # --- reduce to 1-D for ACF (PCA → 1 component) ---
+    n_samples = embeddings.shape[0]
+    if n_samples < 4:
+        print(f"[DCGFM] Skipping ACF for {dataset_name}/{stage}: too few samples ({n_samples}).")
+        return
+
+    if embeddings.shape[1] > 1:
+        pca = PCA(n_components=1, random_state=0)
+        signal_1d = pca.fit_transform(embeddings).ravel()
+    else:
+        signal_1d = embeddings.ravel()
+
+    # number of lags: up to 40 or half the series length − 1, whichever is smaller
+    max_lags = min(40, n_samples // 2 - 1)
+    if max_lags < 1:
+        print(f"[DCGFM] Skipping ACF for {dataset_name}/{stage}: series too short for lags.")
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    plot_acf(signal_1d, ax=ax, lags=max_lags, alpha=0.05)
+    ax.set_title(f"{dataset_name} — {stage.replace('_', ' ').title()} — ACF Plot")
+    ax.set_xlabel("Lag (subgraph index)")
+    ax.set_ylabel("Autocorrelation")
+
+    plot_filename = f"{dataset_name}_acf_{stage}.png"
+    plot_path = os.path.join(save_dir, plot_filename)
+    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[DCGFM] Saved ACF plot    → {plot_path}")
+
+    # -----------------------------------------------------------------------
+    # EXTENSION SECTION — add extra plots using the saved embedding data here.
+    # -----------------------------------------------------------------------
+    # Example: compute and plot the histogram of embedding norms
+    #
+    #   norms = np.linalg.norm(embeddings, axis=1)
+    #   fig2, ax2 = plt.subplots()
+    #   ax2.hist(norms, bins=50)
+    #   ax2.set_title(f"{dataset_name} — {stage} — Embedding Norm Histogram")
+    #   fig2.savefig(os.path.join(save_dir, f"{dataset_name}_norm_hist_{stage}.png"), dpi=150)
+    #   plt.close(fig2)
+    #
+    # Example: 2-D PCA scatter coloured by subgraph index
+    #
+    #   pca2d = PCA(n_components=2, random_state=0).fit_transform(embeddings)
+    #   fig3, ax3 = plt.subplots()
+    #   sc = ax3.scatter(pca2d[:, 0], pca2d[:, 1], c=np.arange(len(pca2d)), cmap="viridis", s=5)
+    #   plt.colorbar(sc, ax=ax3, label="sample index")
+    #   ax3.set_title(f"{dataset_name} — {stage} — PCA 2-D")
+    #   fig3.savefig(os.path.join(save_dir, f"{dataset_name}_pca2d_{stage}.png"), dpi=150)
+    #   plt.close(fig3)
+    # -----------------------------------------------------------------------
+
+
+def get_useful_indices(data_list_no_prompt, hard_pruning_mode, hard_pruning_ratio, hard_pruning_reverse, hard_pruning_epochs,
+                       emb_cache=None):
+    # MODIFIED: added optional emb_cache parameter (default None keeps existing behaviour).
+    # When a list is passed, it is forwarded to the underlying pruning function so that
+    # per-graph embeddings are collected as a side-effect of the normal scoring pass.
+    # Only pass emb_cache when the called function accepts it (i.e. hard_prune_api).
+    call_kwargs = {"data_list": data_list_no_prompt, "max_epochs": hard_pruning_epochs}
+    if emb_cache is not None:
+        call_kwargs["emb_cache"] = emb_cache
+    anomany_scores = globals()[hard_pruning_mode](**call_kwargs)
     if hard_pruning_reverse == False: 
         threshold = np.percentile(anomany_scores, (1.0 - hard_pruning_ratio) * 100)
         useful_indices = np.where(anomany_scores <= threshold)[0].tolist()
@@ -79,22 +180,55 @@ def get_effective_indices(params, tasks):
                     effective_indices[1].append(useful_indices_all[i] - right_bound[0])
                 else:
                     effective_indices[2].append(useful_indices_all[i] - right_bound[1])
-        else:            
-            if params.hard_pruning_joint == True: 
-                useful_indices_all = get_useful_indices(data_list_no_link, params.hard_pruning_mode, params.hard_pruning_ratio, params.hard_pruning_reverse, params.hard_pruning_epochs)
+        else:
+            # ADDED: derive human-readable dataset type names for file naming.
+            # Index 0 = node-level, 1 = link-level, 2 = graph-level tasks (OFA convention).
+            task_type_names = ["node", "link", "graph"]
+
+            if params.hard_pruning_joint == True:
+                # Joint mode: node+graph data pruned together; link is random.
+                # Embeddings for the combined list are saved under "joint" names.
+                emb_cache_joint = []  # ADDED: Point A cache for joint data
+                useful_indices_all = get_useful_indices(
+                    data_list_no_link, params.hard_pruning_mode,
+                    params.hard_pruning_ratio, params.hard_pruning_reverse,
+                    params.hard_pruning_epochs, emb_cache=emb_cache_joint,
+                )
+                # ADDED: Point A — save pre-prune embeddings for joint (node+graph) data
+                if emb_cache_joint:
+                    pre_embs_joint = np.array(emb_cache_joint)
+                    _save_embeddings_and_acf(pre_embs_joint, "joint_node_graph", "pre_prune", EMBEDDINGS_SAVE_DIR)
+                    # ADDED: Point B — save post-prune embeddings (only the kept indices)
+                    post_embs_joint = pre_embs_joint[useful_indices_all]
+                    _save_embeddings_and_acf(post_embs_joint, "joint_node_graph", "post_prune", EMBEDDINGS_SAVE_DIR)
+
                 effective_indices[1] = np.sort(np.random.choice(
                                             params.fs_sample_size,
-                                            size=int(params.fs_sample_size * (1.0 - params.hard_pruning_ratio)), 
+                                            size=int(params.fs_sample_size * (1.0 - params.hard_pruning_ratio)),
                                             replace=False
-                                        )).tolist() 
+                                        )).tolist()
                 for i in range(len(useful_indices_all)):
                     if useful_indices_all[i] < right_bound[0]:
                         effective_indices[0].append(useful_indices_all[i])
-                    else: 
+                    else:
                         effective_indices[2].append(useful_indices_all[i] - right_bound[0])
-            else: 
+            else:
                 for i in range(3):
-                    effective_indices[i] = get_useful_indices(data_list_no_prompt_ind[i], params.hard_pruning_mode, params.hard_pruning_ratio, params.hard_pruning_reverse, params.hard_pruning_epochs)
+                    # ADDED: Point A — collect per-graph embeddings before pruning threshold is applied
+                    emb_cache_i = []
+                    effective_indices[i] = get_useful_indices(
+                        data_list_no_prompt_ind[i], params.hard_pruning_mode,
+                        params.hard_pruning_ratio, params.hard_pruning_reverse,
+                        params.hard_pruning_epochs, emb_cache=emb_cache_i,
+                    )
+                    # ADDED: save Point A embeddings (all subgraphs, pre-prune)
+                    if emb_cache_i:
+                        pre_embs = np.array(emb_cache_i)
+                        dataset_label = task_type_names[i]
+                        _save_embeddings_and_acf(pre_embs, dataset_label, "pre_prune", EMBEDDINGS_SAVE_DIR)
+                        # ADDED: Point B — select only the kept indices for post-prune embeddings
+                        post_embs = pre_embs[effective_indices[i]]
+                        _save_embeddings_and_acf(post_embs, dataset_label, "post_prune", EMBEDDINGS_SAVE_DIR)
             for i in range(3):
                 effective_indices[i] = np.sort(effective_indices[i]).tolist()
         
